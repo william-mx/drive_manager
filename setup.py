@@ -26,7 +26,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'drive_manager = drive_manager.drive_manager:main',
+            'drive_manager_node = drive_manager.drive_manager_node:main',
         ],
     },
 )
