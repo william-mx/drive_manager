@@ -22,6 +22,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # Add more service files here if needed
 )
 
+ament_export_dependencies(rosidl_default_runtime)
+
 # Install Python modules
 ament_python_install_package(${PROJECT_NAME})
 
