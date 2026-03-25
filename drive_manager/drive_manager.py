@@ -1,69 +1,105 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data, QoSProfile, QoSDurabilityPolicy
+from rclpy.qos import qos_profile_sensor_data
+
+from mxck_interfaces.srv import SetMode
 
 from ackermann_msgs.msg import AckermannDriveStamped
-from vision_msgs.msg import Detection2DArray, LabelInfo
+from std_msgs.msg import Float32
 
-from ros2_numpy import from_detection2d_array, from_label_info
+DEFAULT_MAX_SPEED = 2.0  # m/s — applied when no speed limit is active
+
 
 class DriveManager(Node):
     def __init__(self):
         super().__init__('drive_manager')
 
-        # Set up QoS for label mapping (transient local)
-        qos_transient = QoSProfile(depth=1)
-        qos_transient.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
-
-        # Label mapping subscription
-        self.label_sub = self.create_subscription(
-            LabelInfo,
-            '/label_mapping',
-            self.label_mapping_callback,
-            qos_transient
-        )
-
-    def label_mapping_callback(self, msg: LabelInfo):
-        self.id2label = from_label_info(msg)
-        self.label2id = {lbl: idx for idx, lbl in self.id2label.items()}
-        self.get_logger().info(f"Label mapping received: {self.id2label}")
-
-        self.setup_callbacks()
-
-    def setup_callbacks(self):
         # Define Quality of Service (QoS) for communication
-        qos_profile = qos_profile_sensor_data
-        qos_profile.depth = 1
+        self.qos_profile = qos_profile_sensor_data
+        self.qos_profile.depth = 1
 
-        # Setup detection subscription
-        self.det_sub = self.create_subscription(
-            Detection2DArray,
-            '/detections_2d',
-            self.detection_callback,
-            qos_profile
-        )
-
-        # Subscribe to RC command
-        self.cmd_sub = self.create_subscription(
-            AckermannDriveStamped,
+        # List of valid mode options
+        self.modes = [
+            '/follower/ackermann_cmd',
+            '/pilotnet/ackermann_cmd',
+            '/parking/ackermann_cmd',
             '/rc/ackermann_cmd',
-            self.drive_callback,
-            qos_profile
+        ]
+
+        # Init default mode and speed limit
+        self.mode = '/rc/ackermann_cmd'
+        self.max_speed = DEFAULT_MAX_SPEED
+
+        # Mode switch service
+        self.srv = self.create_service(SetMode, 'set_mode', self.update_mode)
+
+        # Subscribe to the active drive source (default: RC)
+        self.cmd_sub = None
+        self.update_subscription(self.mode)
+
+        # Subscribe to speed limit from perception policy node
+        self.speed_limit_sub = self.create_subscription(
+            Float32,
+            '/speed_limit',
+            self.speed_limit_callback,
+            self.qos_profile,
         )
 
-        # Publisher for autonomous topic
+        # Publisher for downstream autonomous command
         self.cmd_pub = self.create_publisher(
             AckermannDriveStamped,
             '/autonomous/ackermann_cmd',
-            qos_profile
+            self.qos_profile,
         )
 
-    def detection_callback(self, msg: Detection2DArray):
-        detections = from_detection2d_array(msg)
-        self.get_logger().info(f"Detections: {detections}")
+    # ------------------------------------------------------------------ #
+    #  Mode switching                                                       #
+    # ------------------------------------------------------------------ #
+
+    def update_mode(self, request, response):
+        if request.mode == self.mode:
+            self.get_logger().info(f"Already in mode: {self.mode}")
+            response.success = True
+            return response
+
+        if request.mode in self.modes:
+            self.mode = request.mode
+            self.update_subscription(self.mode)
+            self.get_logger().info(f"Switched to mode: {self.mode}")
+            response.success = True
+        else:
+            self.get_logger().warn(
+                f"Mode switch failed. Available modes: {', '.join(self.modes)}"
+            )
+            response.success = False
+
+        return response
+
+    def update_subscription(self, topic):
+        """Swap the AckermannDrive subscription to the new source topic."""
+        if self.cmd_sub is not None:
+            self.destroy_subscription(self.cmd_sub)
+
+        self.cmd_sub = self.create_subscription(
+            AckermannDriveStamped,
+            topic,
+            self.drive_callback,
+            self.qos_profile,
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Callbacks                                                            #
+    # ------------------------------------------------------------------ #
+
+    def speed_limit_callback(self, msg: Float32):
+        """Update the active speed cap received from the perception policy."""
+        self.max_speed = msg.data
+        self.get_logger().debug(f"Speed limit updated: {self.max_speed:.2f} m/s")
 
     def drive_callback(self, msg: AckermannDriveStamped):
-        # Forward the message to /autonomous/ackermann_cmd
+        """Clamp speed to the current limit, then forward to /autonomous."""
+        msg.drive.speed = min(msg.drive.speed, self.max_speed)
+
         self.cmd_pub.publish(msg)
 
 
