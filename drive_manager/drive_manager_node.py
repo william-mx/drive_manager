@@ -11,9 +11,6 @@ from std_msgs.msg import Float32
 
 DEFAULT_MAX_SPEED = 2.0  # m/s — applied when no speed limit is active
 
-
-from drive_manager.srv import SetMode 
-
 class DriveManager(Node):
     def __init__(self):
         super().__init__('drive_manager')
@@ -31,7 +28,9 @@ class DriveManager(Node):
         ]
 
         # Init default mode and speed limit
-        self.mode = '/rc/ackermann_cmd'
+        self.declare_parameter('default_mode', '/rc/ackermann_cmd')
+        self.mode = self.get_parameter('default_mode').get_parameter_value().string_value
+
         self.max_speed = DEFAULT_MAX_SPEED
 
         # Mode switch service
